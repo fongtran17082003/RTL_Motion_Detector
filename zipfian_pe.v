@@ -25,6 +25,7 @@
 
 module zipfian_pe(
     input wire clk, rst_n, en,
+    input wire i_valid,
     input wire [7:0] frame_idx,      // Thay thế clear_frame bằng số thứ tự Frame
     
     input wire [7:0] sigma,
@@ -39,7 +40,9 @@ module zipfian_pe(
     
     output reg [7:0] m_out,
     output reg [7:0] v_out,
-    output reg pixel_status_out
+    output reg pixel_status_out,
+    output reg o_valid
+    
 );
     
     wire temp;
@@ -55,22 +58,27 @@ module zipfian_pe(
     reg p_in_r1;
     reg update_v_en_r1;
     reg [7:0] m_next_r1;
+    reg       vld_r1;                 // Thanh ghi dịch trễ tầng 1 cho tín hiệu valid
     
     // Khối pipeline nhịp 1: Loại bỏ clear_frame
-    always @(posedge clk or negedge rst_n) begin 
+    always @(posedge clk or negedge     rst_n) begin 
         if (!rst_n) begin 
             o_val_r1       <= 0;
             v_in_r1        <= 0;
             p_in_r1        <= 0;
             update_v_en_r1 <= 0;
             m_next_r1      <= 0;
+            vld_r1         <= 1'b0;   // Reset valid tầng 1
         end else if (en) begin 
+        vld_r1 <= i_valid;
+        if (i_valid) begin
             o_val_r1       <= o_val;
             v_in_r1        <= v_in;         
             p_in_r1        <= pixel_status_in;         
             update_v_en_r1 <= update_v_en;  
             m_next_r1      <= m_next;
         end 
+        end
     end
     
     wire [15:0] no_full;
@@ -92,16 +100,19 @@ module zipfian_pe(
             v_out            <= 8'd0;
             pixel_status_out <= 1'b0;
         end else if (en) begin
+        o_valid <= vld_r1;
+        if (vld_r1) begin
             if (frame_idx == 8'd0) begin
                 // Học nền chủ động tại Frame đầu tiên, không xóa cứng bằng clear_frame
                 m_out            <= y_in;
-                v_out            <= 8'd8; 
+                v_out            <= 8'd5; 
                 pixel_status_out <= 1'b0;
             end else begin
                 m_out            <= m_next_r1;
                 v_out            <= v_next;
                 pixel_status_out <= p_next;
             end
+        end
         end
     end
 endmodule
