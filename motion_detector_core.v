@@ -69,26 +69,96 @@ module motion_detector_core #(
             else                       sigma = 8'd1;
         end
     end
+    
+    wire [15:0] data_from_bram; // Tín hiệu lấy từ BRAM ra
+    reg  [15:0] addr_r1, addr_r2;
+
+// --- Thêm vào phần logic always ---
+    always @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                addr_r1 <= 0;
+                addr_r2 <= 0;
+            end else if (en ) begin
+                addr_r1 <= pixel_ctr;      // Trễ 1 nhịp
+                addr_r2 <= addr_r1;        // Trễ 2 nhịp (Khớp với PE)
+            end
+        end
 
     // Dây nối tín hiệu valid từ PE ra tầng tiếp theo
     wire pe_valid; 
     wire pixel_status_pe;
     wire p_row0, p_row1, p_row2, p_row3;
+    wire o_valid_bram;
+    
+    reg [7:0] pixel_in_d1, m_in_d1, v_in_d1;
+    reg valid_d1;
+    reg [7:0] frame_ctr_d1;
 
-    zipfian_pe u_pe(
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pixel_in_d1 <= 8'd0;
+            m_in_d1     <= 8'd0;
+            v_in_d1     <= 8'd0;
+            valid_d1    <= 1'b0;
+            frame_ctr_d1<= 8'd0;
+        end else if (en) begin
+            pixel_in_d1 <= pixel_in;           // Trễ pixel 1 nhịp
+            m_in_d1     <= m_in;               // Trễ m_in ngoài 1 nhịp
+            v_in_d1     <= v_in;               // Trễ v_in ngoài 1 nhịp
+            valid_d1    <= i_pixel_data_valid; // Trễ valid 1 nhịp
+            frame_ctr_d1<= frame_ctr;          // Đồng bộ với pixel_in_d1
+        end
+    end
+
+    // --- BỘ CHỌN (MUX) DỮ LIỆU ĐƯA VÀO PE ---
+    // Do data_in của BRAM được nối là {v_next, m_next} nên:
+    // [15:8] là V, [7:0] là M
+    wire [7:0] pe_m_in = (frame_ctr_d1 == 8'd0) ? m_in_d1 : data_from_bram[7:0];
+    wire [7:0] pe_v_in = (frame_ctr_d1 == 8'd0) ? v_in_d1 : data_from_bram[15:8];
+    
+    reg [15:0] addr_r1, addr_r2, addr_r3;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            addr_r1 <= 0;
+            addr_r2 <= 0;
+            addr_r3 <= 0;
+        end else if (en) begin
+            addr_r1 <= pixel_ctr;      // Trễ 1 nhịp (Lúc BRAM đang đọc data)
+            addr_r2 <= addr_r1;        // Trễ 2 nhịp (PE đang tính nhịp 1)
+            addr_r3 <= addr_r2;        // Trễ 3 nhịp (PE xuất kết quả -> Ghi BRAM)
+        end
+    end
+
+
+
+zipfian_pe u_pe(
         .clk(clk), .rst_n(rst_n), .en(en),
-        .i_valid(i_pixel_data_valid),     // Cấp valid thô từ ngoài vào
-        .frame_idx(frame_ctr), 
+        .i_valid(valid_d1),               // SỬA: Dùng valid đã trễ 1 nhịp
+        .frame_idx(frame_ctr_d1),         // SỬA: Dùng frame_ctr đã trễ 1 nhịp
         .sigma(sigma),
         .update_v_en(update_v_en),
         .n_shift(3'b1),
         .v_min(8'd4),
-        .y_in(pixel_in), .m_in(m_in), .v_in(v_in),
+        .y_in(pixel_in_d1),               // SỬA: Pixel đi vào chậm 1 nhịp
+        .m_in(pe_m_in),                   // SỬA: Lấy từ BRAM (hoặc ngoài nếu frame 0)
+        .v_in(pe_v_in),                   // SỬA: Lấy từ BRAM (hoặc ngoài nếu frame 0)
         .pixel_status_in(1'b1),
         .m_out(m_next),
         .v_out(v_next),
         .pixel_status_out(pixel_status_pe),
-        .o_valid(pe_valid)                // Hứng lấy valid đã trễ 2 nhịp clk
+        .o_valid(pe_valid), 
+        .o_valid_bram(o_valid_bram)
+    );
+
+    bram_320x180 u_bram (
+        .clk(clk),
+        .we(pe_valid),              
+        .write_addr(addr_r3),             // SỬA: Ghi vào bằng addr_r3 (trễ 3 nhịp)
+        .data_in({v_next, m_next}), 
+        .read_en(i_pixel_data_valid && (frame_ctr > 0)), // Đọc bằng tín hiệu gốc chưa trễ
+        .read_addr(pixel_ctr),            // Đọc bằng địa chỉ hiện tại chưa trễ
+        .data_out(data_from_bram)
     );
     wire lb_valid;
     line_buffer_4x4 line_buffer(
